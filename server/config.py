@@ -1,0 +1,5 @@
+DB_HOST = 'localhost'
+DB_USER = 'vladimir'
+DB_PASS = '16914324'
+DB_NAME = 'vova'
+DB_CHARSET = 'utf8mb4'
