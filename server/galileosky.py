@@ -6,6 +6,7 @@ import socket
 import struct
 import time
 import pymysql.err
+from decimal import Decimal
 from datetime import datetime, timedelta
 from galileosky import Packet
 
@@ -62,6 +63,23 @@ def create_galileosky_packet(data, connection, id):
                         date_time = datetime.combine(date_obj.date(), time_obj.time())
                         main_packet.add(0x20, dict(time=int((date_time - datetime(1970, 1, 1)).total_seconds())))
 
+                        # tag navigation № 30
+                        lat_deg = int(json_data["data"]["Широта"][0][:2])
+                        lat_min = float(json_data["data"]["Широта"][0][2:])
+                        lat = lat_deg + (lat_min / 60)
+                        if json_data["data"]["Широта"][1] == 'S':
+                            lat = -lat
+                        lon_deg = int(json_data["data"]["Долгота"][0][:3])
+                        lon_min = float(json_data["data"]["Долгота"][0][3:])
+                        lon = lon_deg + (lon_min / 60)
+                        if json_data["data"]["Долгота"][1] == 'W':
+                            lon = -lon
+                        nsat_gps = int(json_data["data"].get("спутники gps", 0))
+                        nsat_galileo = int(json_data["data"].get("спутники galileo", 0))
+                        nsat_glonass = int(json_data["data"].get("спутники glonass", 0))
+                        nsat = nsat_gps + nsat_galileo + nsat_glonass
+                        main_packet.add(0x30, dict(nsat=nsat, source_type=1, lat=lat, lon=lon))
+
                         # tag velocity № 33
                         speed = int(json_data["data"]["Скорость"])
                         course = int(json_data["data"]["Курс"])
@@ -76,9 +94,9 @@ def create_galileosky_packet(data, connection, id):
                         #main_packet.add(0xDC, dict(can32bitr1=can32bitr1_data))
 
                         # tag height № DD
-                        can32bitr2_data = float(json_data["data"]["Mdb3"]) + float(json_data["data"]["Mdb11"])
-                        can32bitr2_data = can32bitr2_data * 1000
+                        can32bitr2_data = float(json_data["data"].get("общий объем топлива", 0)) * 1000
                         main_packet.add(0xDD, dict(can32bitr2=can32bitr2_data))
+
 
                         # расмотреть тег 0x60-15?
 

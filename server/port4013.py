@@ -33,7 +33,7 @@ def receive_complete_packet(client_socket):
 def process_login_packet(packet, client_socket):
     imei = packet[3:packet.find(';')]
     send_response(client_socket, '#AL#1')
-    return imei  # Возвращаем IMEI для использования в дальнейшем
+    return imei
 
 def process_black_box_packet(packet, client_socket, imei):
     packet = packet.replace("#B#", "")
@@ -48,7 +48,7 @@ def process_black_box_packet(packet, client_socket, imei):
         if send_decrypted_packet(message, imei):
             print("Сообщение успешно отправлено.")
         else:
-            print("Ошибка отправки сообщения.")
+            print("Ветроятно сообщение не подошло и небыло отправлено в базу данных.")
 
 def send_response(client_socket, response_code):
     response_packet_bytes = bytes(f'{response_code}\r\n', 'utf-8')
@@ -92,18 +92,20 @@ def decrypted_packet(packet, imei):
     adc = fields[13] if fields[13] != 'NA' else 0
     ibutton = fields[14] if fields[14] != 'NA' else 0
     params = fields[15] if len(fields) > 15 and fields[15] != 'NA' else 0
-    total_sats = 0
-    Mdb3 = 0
-    Mdb11 = 0
 
-    if params != 0:
+    params_dict = {}
+    if params and isinstance(params, str):
         for param in params.split(','):
-            if any(sat_system in param for sat_system in ['sats_gps', 'sats_glonass', 'sats_galileo']):
-                total_sats += int(param.split(':')[1])
-            elif param.startswith("Mdb3:"):
-                Mdb3 = param.split(':')[2]
-            elif param.startswith("Mdb11:"):
-                Mdb11 = param.split(':')[2]
+            try:
+                name, param_type, value = param.split(':')
+                if param_type == '1':
+                    params_dict[name] = int(value)
+                elif param_type == '2':
+                    params_dict[name] = float(value)
+                elif param_type == '3':
+                    params_dict[name] = value
+            except ValueError:
+                print(f"Ошибка при разборе параметра: {param}")
 
     decrypted_packet = {
         "Дата": date,
@@ -117,37 +119,146 @@ def decrypted_packet(packet, imei):
         "Цифровые входы": inputs,
         "Цифровые выходы": outputs,
         "Аналоговые входы": adc,
-        "Код ключа водителя": ibutton,
-        "Общее количество спутников": total_sats,
-        "Mdb3": Mdb3,
-        "Mdb11": Mdb11,
-        "Дополнительные параметры": params
+        "Код ключа водителя": ibutton
     }
 
-    try:
-        fuel = str(float(Mdb3) + float(Mdb11))
-    except ValueError:
-        print(f"Ошибка преобразования Mdb3 ({Mdb3}) и Mdb11 ({Mdb11}) в float.")
-        fuel = "0.0"
+    # Обработка параметров Mdb и добавление в decrypted_packet__________________________________________________________
+    if not any(key.startswith("Mdb") for key in params_dict):
+        print("фкнция decrypted_packet завершается: return None")
+        return None
+    for i in range(7):
+        param_name = ["уровень топлива", "температура топлива", "процент заполнения", "общий объем топлива", "масса топлива", "плотность топлива", "основной объем топлива"][i]
+        total_sum = 0
+        valid_values_count = 0
+        for j in range(4):
+            mdb_key = i + j * 8
+            key = f"Mdb{mdb_key}"
+            if key in params_dict:
+                value = params_dict[key]
+                if value != 0:
+                    total_sum += value
+                    valid_values_count += 1
+                del params_dict[key]
+        if valid_values_count > 0:
+            decrypted_packet[param_name] = total_sum / valid_values_count
 
+    # Обработка параметров Amx и добавление в decrypted_packet__________________________________________________________
+    amx_params_description = {
+        "Amx0": {
+            1: "запрос данных карты с сервера",
+            10: "авторизация выполнена, переход в ожидание ввода дозы пролива",
+            11: "успешная авторизация карты, баланс получен",
+            12: "авторизация незарегистрированной карты",
+            13: "авторизация заблокированной карты",
+            14: "авторизация на заблокированной ТРК",
+            2: "введена доза, ТРК приняла дозу, ожидание старта",
+            21: "передача дозы в ТРК",
+            4: "зафиксирована заправка",
+            51: "переход в режим ожидания по таймауту ввода дозы",
+            52: "переход в режим ожидания по таймауту получения баланса",
+            53: "пользователь отменил авторизацию",
+            6: "изменен статус ТРК",
+            1000: "сообщение по времени"
+        },
+        "Amx1": {
+            0: "ожидание",
+            1: "запрос данных карты с сервера",
+            10: "авторизация карты, баланс успешно получен",
+            11: "авторизация карты, ошибка на сервере",
+            12: "авторизация карты, незарегистрированная карта",
+            13: "авторизация карты, карта заблокирована",
+            14: "авторизация карты, ТРК заблокирована",
+            2: "доза введена, ожидание старта ТРК",
+            21: "передача дозы в ТРК",
+            3: "пролив топлива",
+            4: "пролив окончен, фиксация заправки"
+        },
+        "Amx10": {
+            0: "ТРК в режиме ожидания, кран установлен",
+            1: "ТРК в режиме ожидания, кран снят",
+            2: "установлена доза пролива, ожидание старта ТРК",
+            3: "работа ТРК, пролив топлива",
+            4: "зафиксирована заправка, окончание пролива"
+        },
+    }
+
+    key_translation = {
+        "Amx0": "Причина отсылки сообщения",
+        "Amx1": "Режим работы МОДУЛЯ",
+        "Amx2": "Номер карты",
+        "Amx3": "Баланс карты на момент авторизации",
+        "Amx4": "Введенная доза пролива",
+        "Amx5": "Текущий счетчик ТРК",
+        "Amx6": "Объем зафиксированной заправки",
+        "Amx7": "Нач. тотальный счетчик перед заправкой",
+        "Amx8": "Кон. тотальный счетчик после заправки",
+        "Amx10": "Статус ТРК",
+        "Amx11": "Тотальный (суммарный) счетчик ТРК",
+    }
+
+    # Обработка параметров Amx и добавление в decrypted_packet
+    for key in amx_params_description.keys():
+        if key in params_dict:
+            value = params_dict[key]
+            if value in amx_params_description[key]:
+                decrypted_packet[key_translation[key]] = amx_params_description[key][value]
+            del params_dict[key]
+
+    # Обработка остальных ключей
+    for key, value in params_dict.items():
+        if key == "Amx2":
+            decrypted_packet[key_translation[key]] = value
+        elif key == "Amx3":
+            decrypted_packet[key_translation[key]] = value
+        elif key == "Amx4":
+            decrypted_packet[key_translation[key]] = value
+        elif key == "Amx5":
+            decrypted_packet[key_translation[key]] = value * 0.01
+        elif key == "Amx6":
+            decrypted_packet[key_translation[key]] = value * 0.01
+        elif key == "Amx7":
+            decrypted_packet[key_translation[key]] = value * 0.01
+        elif key == "Amx8":
+            decrypted_packet[key_translation[key]] = value * 0.01
+        elif key == "Amx11":
+            decrypted_packet[key_translation[key]] = value * 0.01
+
+    # Обработка параметров GPS и добавление в decrypted_packet__________________________________________________________
+    additional_params = {
+        "status": "статус",
+        "sats_gps": "спутники gps",
+        "sats_glonass": "спутники glonass",
+        "sats_galileo": "спутники galileo",
+        "pwr_ext": "внешнее питание",
+        "pwr_akb": "аккумулятор",
+        "rssi": "уровень сигнала",
+        "bootcount": "количество перезагрузок",
+    }
+    for param in additional_params.keys():
+        if param in params_dict:
+            decrypted_packet[additional_params[param]] = params_dict[param]
+            del params_dict[param]
+
+    # Формируем статус пакет____________________________________________________________________________________________
     status_packet = {
         "imei": imei,
         "height": height,
-        "fuel": fuel,
+        "fuel": decrypted_packet.get("уровень топлива", 0),
     }
-
-    print("Содержимое status_packet:", status_packet)  # Отладочная информация
 
     try:
         print("Запуск update_status для", imei)
         subprocess.run(['php', '/var/www/html/backend/elements/update_status.php'], input=json.dumps(status_packet), text=True, check=True)
     except subprocess.CalledProcessError as e:
         print("Произошла ошибка при запуске update_status:", e)
-
     return decrypted_packet
 
 def send_decrypted_packet(packet, imei):
     decrypted_data = decrypted_packet(packet, imei)
+    if decrypted_data is None:
+            imei = None
+            return False
+
     decrypted_packet_with_imei = json.dumps({"imei": imei, "data": decrypted_data})
 
     try:
